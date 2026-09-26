@@ -1057,13 +1057,26 @@ with stats_lab:
         sh_stat, sh_p = spstats.shapiro(s_sample)
 
         # Compare the sample with a normal distribution using the observed mean/std.
+        # Compute the KS statistic directly instead of calling scipy.stats.kstest.
+        # This avoids a SciPy/Array-API compatibility issue observed on Streamlit
+        # Cloud with Python 3.14.
         norm_mean = float(np.mean(s_norm))
         norm_std = float(np.std(s_norm, ddof=1))
-        ks_stat, ks_p = spstats.kstest(
-            s_norm,
-            "norm",
-            args=(norm_mean, norm_std)
+
+        sorted_norm = np.sort(s_norm)
+        normal_cdf = spstats.norm.cdf(
+            sorted_norm, loc=norm_mean, scale=norm_std
         )
+        n_norm = len(sorted_norm)
+        ecdf_upper = np.arange(1, n_norm + 1, dtype=np.float64) / n_norm
+        ecdf_lower = np.arange(0, n_norm, dtype=np.float64) / n_norm
+
+        d_plus = np.max(ecdf_upper - normal_cdf)
+        d_minus = np.max(normal_cdf - ecdf_lower)
+        ks_stat = float(max(d_plus, d_minus))
+
+        # Two-sided KS p-value using the exact one-sample KS distribution.
+        ks_p = float(spstats.kstwo.sf(ks_stat, n_norm))
 
         ad_result = spstats.anderson(s_norm, dist="norm")
         jb_stat, jb_p = spstats.jarque_bera(s_norm)
