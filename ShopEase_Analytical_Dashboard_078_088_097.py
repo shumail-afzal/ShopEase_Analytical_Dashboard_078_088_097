@@ -1036,19 +1036,45 @@ with stats_lab:
     st.markdown("#### Test of Normality")
     norm_var = st.selectbox("Numerical variable", NUMERIC_COLS,
                              index=NUMERIC_COLS.index("NetSales"), key="norm_var")
-    s_norm = filtered[norm_var].dropna()
-    s_sample = s_norm.sample(min(len(s_norm), 5000), random_state=SEED)  # Shapiro caps at 5000
-    sh_stat, sh_p = spstats.shapiro(s_sample)
-    ks_stat, ks_p = spstats.kstest(s_norm, "norm", args=(s_norm.mean(), s_norm.std()))
-    ad_result = spstats.anderson(s_norm, dist="norm")
-    jb_stat, jb_p = spstats.jarque_bera(s_norm)
-    st.write(f"**Shapiro-Wilk**: statistic = {sh_stat:.4f}, p-value = {sh_p:.4g}")
-    st.write(f"**Kolmogorov-Smirnov**: statistic = {ks_stat:.4f}, p-value = {ks_p:.4g}")
-    st.write(f"**Anderson-Darling**: statistic = {ad_result.statistic:.4f} "
-             f"(critical value @5% = {ad_result.critical_values[2]:.4f})")
-    st.write(f"**Jarque-Bera**: statistic = {jb_stat:.4f}, p-value = {jb_p:.4g}")
-    st.caption("For all four tests, p < 0.05 (or statistic > critical value for Anderson-Darling) "
-               "indicates the variable is not normally distributed.")
+    # Convert to a plain NumPy float64 array before passing data to SciPy.
+    # This avoids pandas/SciPy dtype incompatibilities that can appear on Streamlit Cloud.
+    s_norm = pd.to_numeric(filtered[norm_var], errors="coerce").dropna().to_numpy(dtype=np.float64)
+
+    if len(s_norm) < 3:
+        st.warning("Not enough valid observations to perform normality tests (minimum: 3).")
+    elif not np.all(np.isfinite(s_norm)):
+        st.warning("The selected variable contains non-finite values, so normality tests cannot be performed.")
+    elif np.std(s_norm) == 0:
+        st.warning("Normality tests cannot be performed because all values are identical.")
+    else:
+        # Shapiro-Wilk caps the sample at 5000 observations.
+        if len(s_norm) > 5000:
+            rng = np.random.default_rng(SEED)
+            s_sample = rng.choice(s_norm, size=5000, replace=False)
+        else:
+            s_sample = s_norm
+
+        sh_stat, sh_p = spstats.shapiro(s_sample)
+
+        # Compare the sample with a normal distribution using the observed mean/std.
+        norm_mean = float(np.mean(s_norm))
+        norm_std = float(np.std(s_norm, ddof=1))
+        ks_stat, ks_p = spstats.kstest(
+            s_norm,
+            "norm",
+            args=(norm_mean, norm_std)
+        )
+
+        ad_result = spstats.anderson(s_norm, dist="norm")
+        jb_stat, jb_p = spstats.jarque_bera(s_norm)
+
+        st.write(f"**Shapiro-Wilk**: statistic = {sh_stat:.4f}, p-value = {sh_p:.4g}")
+        st.write(f"**Kolmogorov-Smirnov**: statistic = {ks_stat:.4f}, p-value = {ks_p:.4g}")
+        st.write(f"**Anderson-Darling**: statistic = {ad_result.statistic:.4f} "
+                 f"(critical value @5% = {ad_result.critical_values[2]:.4f})")
+        st.write(f"**Jarque-Bera**: statistic = {jb_stat:.4f}, p-value = {jb_p:.4g}")
+        st.caption("For all four tests, p < 0.05 (or statistic > critical value for Anderson-Darling) "
+                   "indicates the variable is not normally distributed.")
 
     # --- Non-Parametric Tests ---
     st.markdown("#### Non-Parametric Tests")
