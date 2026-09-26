@@ -19,6 +19,13 @@ import seaborn as sns
 import plotly.express as px
 import plotly.graph_objects as go
 
+# Statistical / inferential / causal analysis
+# Install once if needed: pip install scipy statsmodels
+from scipy import stats as spstats
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+from statsmodels.stats.proportion import proportions_ztest
+
 # -------------------------- CONFIG ---------------------------
 GROUP_ID = "078_088_097"
 SEED = 78088097
@@ -125,7 +132,13 @@ def load_and_prepare(path):
     text_cols = ["Gender", "City", "Category", "Product",
                  "PaymentMethod", "OrderStatus"]
     for c in text_cols:
-        raw[c] = raw[c].astype("string").str.strip().str.replace(r"\s+", " ", regex=True)
+        raw[c] = (
+            raw[c]
+            .astype("string")
+            .str.strip()
+            .str.replace(r"\s+", " ", regex=True)
+            .astype(object)
+        )
 
     # Numeric conversion
     for c in ["CustomerAge", "Quantity", "UnitPrice", "Rating", "TotalAmount"]:
@@ -361,12 +374,13 @@ st.markdown("""
 
 
 # ----------------------------- TABS --------------------------
-overview, visual_lab, customers, products, operations, data_lab = st.tabs([
+overview, visual_lab, customers, products, operations, stats_lab, data_lab = st.tabs([
     "🏠 Overview",
     "✨ Visual Analytics",
     "👥 Customer Analysis",
     "🧺 Product Analysis",
     "🚚 Order & Delivery Analysis",
+    "📐 Statistical Analysis",
     "🧹 Data Quality"
 ])
 
@@ -767,6 +781,377 @@ with operations:
                     labels=dict(x="Hour of day", y="Day", color="Orders"))
     plotly_layout(fig, 390)
     st.plotly_chart(fig, use_container_width=True)
+
+# ============================================================
+# TAB 5 — STATISTICAL ANALYSIS (Descriptive / Inferential / Causal)
+# ============================================================
+NUMERIC_COLS = ["CustomerAge", "Quantity", "UnitPrice", "Discount",
+                 "Rating", "NetSales", "GrossSales", "DiscountValue", "DeliveryDays"]
+CATEGORICAL_COLS = ["Category", "City", "PaymentMethod", "OrderStatus", "Gender"]
+
+with stats_lab:
+    st.subheader("📐 Statistical Analysis")
+    st.caption("Descriptive, inferential and causal statistics computed on the current filtered view.")
+
+    # -------------------------------------------------------
+    # A. DESCRIPTIVE — NON-CATEGORICAL DATA
+    # -------------------------------------------------------
+    st.markdown("## A. Descriptive Statistics — Non-Categorical Data")
+    desc_cols = st.multiselect(
+        "Numerical variables", NUMERIC_COLS,
+        default=["NetSales", "Quantity", "UnitPrice", "Discount", "Rating", "DeliveryDays"],
+        key="desc_cols"
+    )
+    if desc_cols:
+        rows = []
+        for c in desc_cols:
+            s = filtered[c].dropna()
+            if s.empty:
+                continue
+            mode_val = s.mode()
+            rows.append({
+                "Variable": c,
+                "Count": int(s.count()),
+                "Minimum": s.min(),
+                "25th Pctl": s.quantile(.25),
+                "Median (50th Pctl)": s.quantile(.50),
+                "75th Pctl": s.quantile(.75),
+                "Maximum": s.max(),
+                "Mean": s.mean(),
+                "Mode": mode_val.iloc[0] if len(mode_val) else np.nan,
+                "Range": s.max() - s.min(),
+                "Std Dev": s.std(),
+                "Skewness": s.skew(),
+                "Kurtosis": s.kurt(),
+            })
+        desc_table = pd.DataFrame(rows).set_index("Variable").round(3)
+        st.dataframe(desc_table, use_container_width=True)
+    else:
+        st.info("Select at least one numerical variable.")
+
+    st.divider()
+
+    # -------------------------------------------------------
+    # B. DESCRIPTIVE — CATEGORICAL DATA
+    # -------------------------------------------------------
+    st.markdown("## B. Descriptive Statistics — Categorical Data")
+    cat_var = st.selectbox("Categorical variable", CATEGORICAL_COLS, key="cat_desc_var")
+    freq = filtered[cat_var].value_counts(dropna=True).reset_index()
+    freq.columns = [cat_var, "Frequency"]
+    freq["Relative Frequency (%)"] = (freq["Frequency"] / freq["Frequency"].sum() * 100).round(2)
+    st.dataframe(freq, use_container_width=True, hide_index=True)
+    if len(freq):
+        st.markdown(
+            f'<div class="insight">🔼 Highest frequency: <b>{freq.iloc[0][cat_var]}</b> '
+            f'({freq.iloc[0]["Frequency"]:,} records, {freq.iloc[0]["Relative Frequency (%)"]:.1f}%)<br>'
+            f'🔽 Lowest frequency: <b>{freq.iloc[-1][cat_var]}</b> '
+            f'({freq.iloc[-1]["Frequency"]:,} records, {freq.iloc[-1]["Relative Frequency (%)"]:.1f}%)</div>',
+            unsafe_allow_html=True
+        )
+
+    st.divider()
+
+    # -------------------------------------------------------
+    # C. CORRELATION — PEARSON & SPEARMAN
+    # -------------------------------------------------------
+    st.markdown("## C. Measures of Correlation")
+    corr_vars = st.multiselect(
+        "Numerical variables for correlation",
+        NUMERIC_COLS,
+        default=["Quantity", "UnitPrice", "Discount", "Rating", "NetSales"],
+        key="stats_corr_vars"
+    )
+    if len(corr_vars) >= 2:
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            fig = px.imshow(
+                filtered[corr_vars].corr(method="pearson"),
+                text_auto=".2f", zmin=-1, zmax=1, color_continuous_scale="RdBu_r",
+                title="Pearson correlation"
+            )
+            plotly_layout(fig, 400)
+            st.plotly_chart(fig, use_container_width=True)
+        with cc2:
+            fig = px.imshow(
+                filtered[corr_vars].corr(method="spearman"),
+                text_auto=".2f", zmin=-1, zmax=1, color_continuous_scale="RdBu_r",
+                title="Spearman correlation"
+            )
+            plotly_layout(fig, 400)
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("#### Significance test of a specific correlation (t-test)")
+        pc1, pc2 = st.columns(2)
+        var_a = pc1.selectbox("Variable A", corr_vars, index=0, key="corr_test_a")
+        var_b = pc2.selectbox("Variable B", corr_vars, index=min(1, len(corr_vars)-1), key="corr_test_b")
+        pair = filtered[[var_a, var_b]].dropna()
+        if var_a != var_b and len(pair) > 2:
+            r_p, p_p = spstats.pearsonr(pair[var_a], pair[var_b])
+            r_s, p_s = spstats.spearmanr(pair[var_a], pair[var_b])
+            st.write(f"**Pearson:** r = {r_p:.3f}, p-value = {p_p:.4g} "
+                     f"({'significant' if p_p < 0.05 else 'not significant'} at α = 0.05)")
+            st.write(f"**Spearman:** ρ = {r_s:.3f}, p-value = {p_s:.4g} "
+                     f"({'significant' if p_s < 0.05 else 'not significant'} at α = 0.05)")
+    else:
+        st.info("Select at least two numerical variables.")
+
+    st.divider()
+
+    # -------------------------------------------------------
+    # D. VISUALIZATION — BOX / VIOLIN / HISTOGRAM / PAIR PLOT
+    # -------------------------------------------------------
+    st.markdown("## D. Additional Visualizations")
+    dv1, dv2 = st.columns(2)
+    with dv1:
+        box_var = st.selectbox("Numerical variable (Box / Violin / Histogram)", NUMERIC_COLS,
+                                index=NUMERIC_COLS.index("NetSales"), key="box_var")
+        box_group = st.selectbox("Group by (optional)", ["None"] + CATEGORICAL_COLS, key="box_group")
+    with dv2:
+        bins = st.slider("Histogram bins", 10, 100, 30, key="hist_bins")
+
+    grp = None if box_group == "None" else box_group
+    b1, b2 = st.columns(2)
+    with b1:
+        fig = px.box(filtered, x=grp, y=box_var, points="outliers",
+                     title=f"Box-Whisker Plot — {box_var}" + (f" by {grp}" if grp else ""))
+        plotly_layout(fig, 400)
+        st.plotly_chart(fig, use_container_width=True)
+    with b2:
+        fig = px.violin(filtered, x=grp, y=box_var, box=True, points=False,
+                         title=f"Violin Plot — {box_var}" + (f" by {grp}" if grp else ""))
+        plotly_layout(fig, 400)
+        st.plotly_chart(fig, use_container_width=True)
+
+    fig = px.histogram(filtered, x=box_var, nbins=bins, marginal="rug",
+                        title=f"Histogram — {box_var}")
+    plotly_layout(fig, 400)
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("#### Pair Plot")
+    pair_vars = st.multiselect(
+        "Variables for pair plot (2–5 recommended)", NUMERIC_COLS,
+        default=["NetSales", "Quantity", "UnitPrice", "Rating"], key="pair_vars"
+    )
+    if len(pair_vars) >= 2:
+        fig = px.scatter_matrix(filtered, dimensions=pair_vars, color="Category",
+                                 title="Pair Plot of selected numerical variables")
+        plotly_layout(fig, 620)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Select at least two variables for the pair plot.")
+
+    st.divider()
+
+    # -------------------------------------------------------
+    # E. INFERENTIAL STATISTICS
+    # -------------------------------------------------------
+    st.markdown("## E. Inferential Statistics")
+
+    # --- Confidence Interval ---
+    st.markdown("#### Confidence Interval for the Mean")
+    ci1, ci2 = st.columns(2)
+    ci_var = ci1.selectbox("Numerical variable", NUMERIC_COLS,
+                            index=NUMERIC_COLS.index("NetSales"), key="ci_var")
+    conf_level = ci2.slider("Confidence level", 0.80, 0.99, 0.95, 0.01, key="ci_level")
+    s = filtered[ci_var].dropna()
+    if len(s) > 1:
+        mean, sem = s.mean(), spstats.sem(s)
+        lo, hi = spstats.t.interval(conf_level, len(s)-1, loc=mean, scale=sem)
+        st.write(f"Mean **{ci_var}** = {mean:.3f} → **{conf_level*100:.0f}% CI = [{lo:.3f}, {hi:.3f}]** (n = {len(s):,})")
+
+    # --- Test of Mean: t-test / ANOVA ---
+    st.markdown("#### Test of Mean — Independent t-test & ANOVA")
+    tm_num = st.selectbox("Numerical variable", NUMERIC_COLS,
+                           index=NUMERIC_COLS.index("NetSales"), key="tm_num")
+    tm_grp = st.selectbox("Grouping (categorical) variable", CATEGORICAL_COLS, key="tm_grp")
+    groups = {k: v.dropna().values for k, v in filtered.groupby(tm_grp)[tm_num]}
+    groups = {k: v for k, v in groups.items() if len(v) > 1}
+    if len(groups) == 2:
+        (g1, a1), (g2, a2) = list(groups.items())
+        t_stat, p_val = spstats.ttest_ind(a1, a2, equal_var=False)
+        st.write(f"**Two-sample t-test** ({g1} vs {g2}): t = {t_stat:.3f}, p-value = {p_val:.4g} "
+                 f"({'significant' if p_val < 0.05 else 'not significant'} difference in mean {tm_num})")
+    elif len(groups) > 2:
+        f_stat, p_val = spstats.f_oneway(*groups.values())
+        st.write(f"**One-way ANOVA** across {len(groups)} groups of {tm_grp}: "
+                 f"F = {f_stat:.3f}, p-value = {p_val:.4g} "
+                 f"({'significant' if p_val < 0.05 else 'not significant'} difference in mean {tm_num})")
+    else:
+        st.info("Not enough groups with data for this comparison.")
+
+    # --- Test of Variance ---
+    st.markdown("#### Test of Variance — F-test, Levene, Bartlett")
+    if len(groups) == 2:
+        (g1, a1), (g2, a2) = list(groups.items())
+        f_ratio = np.var(a1, ddof=1) / np.var(a2, ddof=1)
+        st.write(f"**F-test (variance ratio)** {g1}/{g2}: F = {f_ratio:.3f}")
+    if len(groups) >= 2:
+        lev_stat, lev_p = spstats.levene(*groups.values())
+        bart_stat, bart_p = spstats.bartlett(*groups.values())
+        st.write(f"**Levene's test**: statistic = {lev_stat:.3f}, p-value = {lev_p:.4g} "
+                 f"({'unequal' if lev_p < 0.05 else 'equal'} variances)")
+        st.write(f"**Bartlett's test**: statistic = {bart_stat:.3f}, p-value = {bart_p:.4g} "
+                 f"({'unequal' if bart_p < 0.05 else 'equal'} variances)")
+
+    # --- Test of Proportion ---
+    st.markdown("#### Test of Proportion — z-test & Chi-square")
+    tp1, tp2 = st.columns(2)
+    prop_cat = tp1.selectbox("Categorical outcome variable", CATEGORICAL_COLS,
+                              index=CATEGORICAL_COLS.index("OrderStatus"), key="prop_cat")
+    prop_grp = tp2.selectbox("Grouping variable for z-test", 
+                              [c for c in CATEGORICAL_COLS if c != prop_cat], key="prop_grp")
+    outcome_val = st.selectbox(f"'{prop_cat}' value to test the proportion of", 
+                                sorted(filtered[prop_cat].dropna().unique().tolist()), key="prop_val")
+    grp_vals = sorted(filtered[prop_grp].dropna().unique().tolist())
+    if len(grp_vals) >= 2:
+        g_a, g_b = grp_vals[0], grp_vals[1]
+        sub_a = filtered[filtered[prop_grp] == g_a][prop_cat]
+        sub_b = filtered[filtered[prop_grp] == g_b][prop_cat]
+        count = np.array([(sub_a == outcome_val).sum(), (sub_b == outcome_val).sum()])
+        nobs = np.array([len(sub_a), len(sub_b)])
+        z_stat, z_p = proportions_ztest(count, nobs)
+        st.write(f"**Two-proportion z-test** ('{outcome_val}' rate, {g_a} vs {g_b}): "
+                 f"z = {z_stat:.3f}, p-value = {z_p:.4g} "
+                 f"({'significant' if z_p < 0.05 else 'not significant'} difference)")
+
+    st.markdown("###### Chi-square: Goodness of Fit & Test of Independence")
+    gof_var = st.selectbox("Goodness-of-fit variable (tested against a uniform distribution)",
+                            CATEGORICAL_COLS, key="gof_var")
+    obs = filtered[gof_var].value_counts()
+    chi_gof, p_gof = spstats.chisquare(obs.values)
+    st.write(f"**Chi-square goodness of fit** ({gof_var} vs uniform): "
+             f"χ² = {chi_gof:.3f}, p-value = {p_gof:.4g}")
+
+    ci1b, ci2b = st.columns(2)
+    indep_a = ci1b.selectbox("Variable 1 (independence test)", CATEGORICAL_COLS, index=0, key="indep_a")
+    indep_b = ci2b.selectbox("Variable 2 (independence test)", CATEGORICAL_COLS, index=1, key="indep_b")
+    if indep_a != indep_b:
+        contingency = pd.crosstab(filtered[indep_a], filtered[indep_b])
+        chi2, p_ind, dof, _ = spstats.chi2_contingency(contingency)
+        st.write(f"**Chi-square test of independence** ({indep_a} × {indep_b}): "
+                 f"χ² = {chi2:.3f}, dof = {dof}, p-value = {p_ind:.4g} "
+                 f"({'dependent' if p_ind < 0.05 else 'independent'} at α = 0.05)")
+
+    # --- Test of Normality ---
+    st.markdown("#### Test of Normality")
+    norm_var = st.selectbox("Numerical variable", NUMERIC_COLS,
+                             index=NUMERIC_COLS.index("NetSales"), key="norm_var")
+    s_norm = filtered[norm_var].dropna()
+    s_sample = s_norm.sample(min(len(s_norm), 5000), random_state=SEED)  # Shapiro caps at 5000
+    sh_stat, sh_p = spstats.shapiro(s_sample)
+    ks_stat, ks_p = spstats.kstest(s_norm, "norm", args=(s_norm.mean(), s_norm.std()))
+    ad_result = spstats.anderson(s_norm, dist="norm")
+    jb_stat, jb_p = spstats.jarque_bera(s_norm)
+    st.write(f"**Shapiro-Wilk**: statistic = {sh_stat:.4f}, p-value = {sh_p:.4g}")
+    st.write(f"**Kolmogorov-Smirnov**: statistic = {ks_stat:.4f}, p-value = {ks_p:.4g}")
+    st.write(f"**Anderson-Darling**: statistic = {ad_result.statistic:.4f} "
+             f"(critical value @5% = {ad_result.critical_values[2]:.4f})")
+    st.write(f"**Jarque-Bera**: statistic = {jb_stat:.4f}, p-value = {jb_p:.4g}")
+    st.caption("For all four tests, p < 0.05 (or statistic > critical value for Anderson-Darling) "
+               "indicates the variable is not normally distributed.")
+
+    # --- Non-Parametric Tests ---
+    st.markdown("#### Non-Parametric Tests")
+    if len(groups) == 2:
+        (g1, a1), (g2, a2) = list(groups.items())
+        mw_stat, mw_p = spstats.mannwhitneyu(a1, a2)
+        st.write(f"**Mann-Whitney U** ({g1} vs {g2} on {tm_num}): U = {mw_stat:.1f}, p-value = {mw_p:.4g}")
+    if len(groups) > 2:
+        kw_stat, kw_p = spstats.kruskal(*groups.values())
+        st.write(f"**Kruskal-Wallis** across {len(groups)} groups of {tm_grp}: "
+                 f"H = {kw_stat:.3f}, p-value = {kw_p:.4g}")
+
+    st.markdown("###### Paired / Related-samples tests")
+    wpair = filtered[["GrossSales", "NetSales"]].dropna()
+    if len(wpair) > 1:
+        w_stat, w_p = spstats.wilcoxon(wpair["GrossSales"], wpair["NetSales"])
+        st.write(f"**Wilcoxon signed-rank** (GrossSales vs NetSales, paired by order): "
+                 f"W = {w_stat:.1f}, p-value = {w_p:.4g}")
+
+    fried_vars = st.multiselect(
+        "Related numerical measures for Friedman test (pick exactly 3)",
+        NUMERIC_COLS, default=["Quantity", "UnitPrice", "Discount"], key="fried_vars"
+    )
+    if len(fried_vars) == 3:
+        fdata = filtered[fried_vars].dropna()
+        fr_stat, fr_p = spstats.friedmanchisquare(fdata[fried_vars[0]], fdata[fried_vars[1]], fdata[fried_vars[2]])
+        st.write(f"**Friedman test** across {', '.join(fried_vars)}: "
+                 f"χ² = {fr_stat:.3f}, p-value = {fr_p:.4g}")
+    else:
+        st.caption("Pick exactly 3 variables above to run the Friedman test.")
+
+    st.divider()
+
+    # -------------------------------------------------------
+    # F. CAUSAL ANALYSIS — REGRESSION
+    # -------------------------------------------------------
+    st.markdown("## F. Causal Analysis — Regression")
+
+    st.markdown("#### Simple Linear Regression (cross-sectional)")
+    rg1, rg2 = st.columns(2)
+    reg_x = rg1.selectbox("Predictor (X)", [c for c in NUMERIC_COLS if c != "NetSales"],
+                           index=0, key="reg_x")
+    reg_y = rg2.selectbox("Response (Y)", NUMERIC_COLS,
+                           index=NUMERIC_COLS.index("NetSales"), key="reg_y")
+    reg_data = filtered[[reg_x, reg_y]].dropna()
+    if len(reg_data) > 2:
+        X = sm.add_constant(reg_data[reg_x])
+        model = sm.OLS(reg_data[reg_y], X).fit()
+        st.write(f"**{reg_y} = {model.params.iloc[0]:.3f} + {model.params.iloc[1]:.4f} × {reg_x}** "
+                 f"&nbsp; R² = {model.rsquared:.3f}, p-value (slope) = {model.pvalues.iloc[1]:.4g}")
+        fig = px.scatter(reg_data, x=reg_x, y=reg_y, trendline="ols",
+                          title=f"Linear regression: {reg_y} on {reg_x}")
+        plotly_layout(fig, 420)
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("#### Polynomial Regression (degree 2)")
+    if len(reg_data) > 3:
+        poly_data = reg_data.copy()
+        poly_data[f"{reg_x}_sq"] = poly_data[reg_x] ** 2
+        Xp = sm.add_constant(poly_data[[reg_x, f"{reg_x}_sq"]])
+        poly_model = sm.OLS(poly_data[reg_y], Xp).fit()
+        st.write(f"**{reg_y} = {poly_model.params.iloc[0]:.3f} + {poly_model.params.iloc[1]:.4f}×{reg_x} "
+                 f"+ {poly_model.params.iloc[2]:.6f}×{reg_x}²** &nbsp; R² = {poly_model.rsquared:.3f}")
+        fig = px.scatter(poly_data, x=reg_x, y=reg_y, trendline="lowess",
+                          title=f"Polynomial fit trend: {reg_y} on {reg_x}")
+        plotly_layout(fig, 420)
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("#### Regression with a Categorical Predictor")
+    cat_pred = st.selectbox("Categorical predictor", CATEGORICAL_COLS,
+                             index=CATEGORICAL_COLS.index("Category"), key="cat_pred_reg")
+    reg_cat_data = filtered[[reg_y, reg_x, cat_pred]].dropna().rename(
+        columns={reg_y: "Y", reg_x: "X", cat_pred: "G"}
+    )
+    if len(reg_cat_data) > 5 and reg_cat_data["G"].nunique() > 1:
+        formula = "Y ~ X + C(G)"
+        cat_model = smf.ols(formula, data=reg_cat_data).fit()
+        st.write(f"Model: **{reg_y} ~ {reg_x} + C({cat_pred})** &nbsp; "
+                 f"R² = {cat_model.rsquared:.3f}, F p-value = {cat_model.f_pvalue:.4g}")
+        with st.expander("Show full coefficient table"):
+            st.dataframe(cat_model.summary2().tables[1], use_container_width=True)
+
+    st.markdown("#### Logistic Regression")
+    st.caption("Predicting the probability that an order is 'Delivered' from numerical predictors.")
+    log_preds = st.multiselect(
+        "Predictors", [c for c in NUMERIC_COLS if c not in ["DeliveryDays"]],
+        default=["UnitPrice", "Discount", "Quantity", "CustomerAge"], key="log_preds"
+    )
+    if log_preds:
+        log_data = filtered[log_preds + ["OrderStatus"]].dropna().copy()
+        log_data["IsDelivered"] = log_data["OrderStatus"].str.lower().eq("delivered").astype(int)
+        if log_data["IsDelivered"].nunique() == 2:
+            Xl = sm.add_constant(log_data[log_preds])
+            logit_model = sm.Logit(log_data["IsDelivered"], Xl).fit(disp=0)
+            st.write(f"Pseudo R² = {logit_model.prsquared:.3f}")
+            coef_table = pd.DataFrame({
+                "Coefficient": logit_model.params,
+                "Odds Ratio": np.exp(logit_model.params),
+                "p-value": logit_model.pvalues
+            }).round(4)
+            st.dataframe(coef_table, use_container_width=True)
+        else:
+            st.info("Need both delivered and non-delivered orders in the current filter to fit this model.")
 
 # ============================================================
 # TAB 6 — DATA QUALITY & EXPORT
